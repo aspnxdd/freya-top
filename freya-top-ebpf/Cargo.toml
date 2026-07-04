@@ -1,0 +1,17 @@
+[package]
+name = "freya-top-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+freya-top-common = { path = "../freya-top-common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "freya-top"
+path = "src/main.rs"
