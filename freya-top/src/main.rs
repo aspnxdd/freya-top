@@ -14,6 +14,7 @@ use freya_top_common::{
 };
 #[rustfmt::skip]
 use log::{debug, warn};
+use clap::Parser;
 use tokio::{signal, time};
 
 fn set_target_pid(bpf: &mut Ebpf, pid: u32) -> anyhow::Result<()> {
@@ -29,9 +30,19 @@ fn load(data: &[u8]) -> Event {
     event
 }
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// PID of the process to trace
+    #[arg(short, long)]
+    pid: u32,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
+
+    let args = Args::parse();
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
@@ -70,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let pid = 402428;
+    let pid = args.pid;
 
     set_target_pid(&mut ebpf, pid)?;
 
