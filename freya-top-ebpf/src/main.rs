@@ -10,7 +10,10 @@ use aya_ebpf::{
     maps::{Array, HashMap, RingBuf},
     programs::TracePointContext,
 };
-use freya_top_common::{EVENT_KIND_CPU_RUNTIME, EVENT_KIND_RUNQ_LATENCY, EVENT_KIND_WAKEUP, Event};
+use freya_top_common::{
+    EVENT_KIND_CPU_RUNTIME, EVENT_KIND_INVOLUNTARY_CONTEXT_SWITCH, EVENT_KIND_RUNQ_LATENCY,
+    EVENT_KIND_VOLUNTARY_CONTEXT_SWITCH, EVENT_KIND_WAKEUP, Event,
+};
 
 const SCHED_SWITCH_PREV_PID_OFFSET: usize = 24;
 const SCHED_SWITCH_PREV_STATE_OFFSET: usize = 32;
@@ -110,11 +113,14 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, i64> {
         }
 
         if prev_state == 0 {
+            emit_event(EVENT_KIND_INVOLUNTARY_CONTEXT_SWITCH, prev_tid, now, 1)?;
             let wakeup = WakeupInfo {
                 ts_ns: now,
                 source: WAKE_SOURCE_PREEMPTED,
             };
             let _ = WAKEUPS.insert(&prev_tid, &wakeup, 0);
+        } else {
+            emit_event(EVENT_KIND_VOLUNTARY_CONTEXT_SWITCH, prev_tid, now, 1)?;
         }
     }
 

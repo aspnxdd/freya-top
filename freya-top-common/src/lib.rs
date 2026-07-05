@@ -3,6 +3,8 @@
 pub const EVENT_KIND_RUNQ_LATENCY: u8 = 1;
 pub const EVENT_KIND_CPU_RUNTIME: u8 = 2;
 pub const EVENT_KIND_WAKEUP: u8 = 3;
+pub const EVENT_KIND_VOLUNTARY_CONTEXT_SWITCH: u8 = 4;
+pub const EVENT_KIND_INVOLUNTARY_CONTEXT_SWITCH: u8 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

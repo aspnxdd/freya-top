@@ -8,7 +8,7 @@ use aya::{
     maps::{Array, RingBuf},
     programs::TracePoint,
 };
-use freya_top_common::{EVENT_KIND_CPU_RUNTIME, EVENT_KIND_RUNQ_LATENCY, EVENT_KIND_WAKEUP, Event};
+use freya_top_common::{EVENT_KIND_CPU_RUNTIME, EVENT_KIND_INVOLUNTARY_CONTEXT_SWITCH, EVENT_KIND_RUNQ_LATENCY, EVENT_KIND_VOLUNTARY_CONTEXT_SWITCH, EVENT_KIND_WAKEUP, Event};
 #[rustfmt::skip]
 use log::{debug, warn};
 use tokio::{signal, time};
@@ -99,6 +99,8 @@ async fn main() -> anyhow::Result<()> {
     let mut cpu_runtime_ns = 0u64;
     let mut wakeups = 0u64;
     let mut runq_latencies_ns = Vec::new();
+    let mut voluntary_switches = 0u64;
+    let mut involuntary_switches = 0u64;
 
     println!("Tracing scheduler events for PID {pid}. Press Ctrl-C to exit.");
     loop {
@@ -125,6 +127,8 @@ async fn main() -> anyhow::Result<()> {
                         EVENT_KIND_RUNQ_LATENCY => {
                             runq_latencies_ns.push(event.value_ns);
                         }
+                        EVENT_KIND_VOLUNTARY_CONTEXT_SWITCH => voluntary_switches += 1,
+                        EVENT_KIND_INVOLUNTARY_CONTEXT_SWITCH => involuntary_switches += 1,
                         _ =>println!("unknown event kind: {}", event.kind),
                     }
                 }
@@ -140,16 +144,20 @@ async fn main() -> anyhow::Result<()> {
                         let index = ((runq_latencies_ns.len() - 1) as f64 * 0.95).ceil() as usize;
                         format!("{:.1}us", runq_latencies_ns[index] as f64 / 1_000.0)
                     };
+                    let voluntary_switches_per_sec = voluntary_switches as f64 / elapsed.as_secs_f64();
+                    let involuntary_switches_per_sec = involuntary_switches as f64 / elapsed.as_secs_f64();
 
                     println!(
-                        "Thread CPU {:.6}%   Total CPU {:.6}%   Wakeups {:.0}/s   Run queue latency p95 {}",
-                        cpu_percentage, cpu_percentage / cores as f64, wakeups_per_sec, runq_p95,
+                        "Thread CPU {:.6}%   Total CPU {:.6}%   Wakeups {:.0}/s   Run queue latency p95 {}   Voluntary context switches {:.0}/s   Involuntary context switches {:.0}/s",
+                        cpu_percentage, cpu_percentage / cores as f64, wakeups_per_sec, runq_p95, voluntary_switches_per_sec, involuntary_switches_per_sec
                     );
 
                     window_start = Instant::now();
                     cpu_runtime_ns = 0;
                     wakeups = 0;
                     runq_latencies_ns.clear();
+                    voluntary_switches = 0;
+                    involuntary_switches = 0;
                 }
             }
         }
