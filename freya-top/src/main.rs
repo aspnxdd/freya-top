@@ -1,13 +1,17 @@
-use std::{mem, thread, time::Duration};
+use std::{
+    mem,
+    time::{Duration, Instant},
+};
 
 use aya::{
     Ebpf,
     maps::{Array, RingBuf},
     programs::TracePoint,
 };
+use freya_top_common::{EVENT_KIND_CPU_RUNTIME, EVENT_KIND_RUNQ_LATENCY, EVENT_KIND_WAKEUP, Event};
 #[rustfmt::skip]
 use log::{debug, warn};
-use tokio::signal;
+use tokio::{signal, time};
 
 fn set_target_pid(bpf: &mut Ebpf, pid: u32) -> anyhow::Result<()> {
     let mut target_tgid = Array::<_, u32>::try_from(bpf.map_mut("TARGET_TGID").unwrap())?;
@@ -17,14 +21,9 @@ fn set_target_pid(bpf: &mut Ebpf, pid: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct Event {
-    pub kind: u32,
-    pub tid: u32,
-    pub cpu: u32,
-    pub ts_ns: u64,
-    pub value_ns: u64,
+fn load(data: &[u8]) -> Event {
+    let event = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const Event) };
+    event
 }
 
 #[tokio::main]
@@ -68,38 +67,92 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let pid = 487451;
+    let pid = 402428;
+
     set_target_pid(&mut ebpf, pid)?;
 
-    let program: &mut TracePoint = ebpf.program_mut("freya_top").unwrap().try_into()?;
+    let program: &mut TracePoint = ebpf
+        .program_mut("sched_switch")
+        .ok_or_else(|| anyhow::anyhow!("sched_switch program not found"))?
+        .try_into()?;
     program.load()?;
     program.attach("sched", "sched_switch")?;
 
-    let mut ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").ok_or_else(|| anyhow::anyhow!("EVENTS map not found"))?)?;
+    let program: &mut TracePoint = ebpf
+        .program_mut("sched_wakeup")
+        .ok_or_else(|| anyhow::anyhow!("sched_wakeup program not found"))?
+        .try_into()?;
+    program.load()?;
+    program.attach("sched", "sched_wakeup")?;
 
-    println!("Waiting for events...");
-    loop {
-        while let Some(item) = ring_buf.next() {
-            let data: &[u8] = &item;
+    let mut ring_buf = RingBuf::try_from(
+        ebpf.map_mut("EVENTS")
+            .ok_or_else(|| anyhow::anyhow!("EVENTS map not found"))?,
+    )?;
 
-            if data.len() != mem::size_of::<Event>() {
-                eprintln!("unexpected event size: {}", data.len());
-                continue;
-            }
-
-            let event = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const Event) };
-
-            println!(
-                "kind={} tid={} cpu={} ts={} value_ns={}",
-                event.kind, event.tid, event.cpu, event.ts_ns, event.value_ns,
-            );
-        }
-
-        thread::sleep(Duration::from_millis(50));
-    }
     let ctrl_c = signal::ctrl_c();
-    println!("Waiting for Ctrl-C...");
-    ctrl_c.await?;
+    tokio::pin!(ctrl_c);
+
+    let mut window_start = Instant::now();
+    let mut cpu_runtime_ns = 0u64;
+    let mut wakeups = 0u64;
+    let mut runq_latencies_ns = Vec::new();
+
+    println!("Tracing scheduler events for PID {pid}. Press Ctrl-C to exit.");
+    loop {
+        tokio::select! {
+            result = &mut ctrl_c => {
+                result?;
+                break;
+            }
+            _ = time::sleep(Duration::from_millis(50)) => {
+                while let Some(item) = ring_buf.next() {
+                    let data: &[u8] = &item;
+
+                    if data.len() != mem::size_of::<Event>() {
+                        eprintln!("unexpected event size: {}", data.len());
+                        continue;
+                    }
+
+                    let event = load(data);
+                    match event.kind {
+                        EVENT_KIND_CPU_RUNTIME => {
+                            cpu_runtime_ns = cpu_runtime_ns.saturating_add(event.value_ns)
+                        }
+                        EVENT_KIND_WAKEUP => wakeups += 1,
+                        EVENT_KIND_RUNQ_LATENCY => {
+                            runq_latencies_ns.push(event.value_ns);
+                        }
+                        _ =>println!("unknown event kind: {}", event.kind),
+                    }
+                }
+
+                let elapsed = window_start.elapsed();
+                if elapsed >= Duration::from_secs(1) {
+                    let cpu_percentage = (cpu_runtime_ns as f64 / elapsed.as_nanos() as f64) * 100.0;
+                    let wakeups_per_sec = wakeups as f64 / elapsed.as_secs_f64();
+                    let runq_p95 = if runq_latencies_ns.is_empty() {
+                        "n/a".to_string()
+                    } else {
+                        runq_latencies_ns.sort();
+                        let index = ((runq_latencies_ns.len() - 1) as f64 * 0.95).ceil() as usize;
+                        format!("{:.1}us", runq_latencies_ns[index] as f64 / 1_000.0)
+                    };
+
+                    println!(
+                        "CPU {:.6}%   Wakeups {:.0}/s   Run queue latency p95 {}",
+                        cpu_percentage, wakeups_per_sec, runq_p95,
+                    );
+
+                    window_start = Instant::now();
+                    cpu_runtime_ns = 0;
+                    wakeups = 0;
+                    runq_latencies_ns.clear();
+                }
+            }
+        }
+    }
+
     println!("Exiting...");
 
     Ok(())
