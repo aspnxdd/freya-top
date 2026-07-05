@@ -93,6 +93,8 @@ async fn main() -> anyhow::Result<()> {
     let ctrl_c = signal::ctrl_c();
     tokio::pin!(ctrl_c);
 
+    let cores = std::thread::available_parallelism().map(|n| n.get())?;
+
     let mut window_start = Instant::now();
     let mut cpu_runtime_ns = 0u64;
     let mut wakeups = 0u64;
@@ -140,8 +142,8 @@ async fn main() -> anyhow::Result<()> {
                     };
 
                     println!(
-                        "CPU {:.6}%   Wakeups {:.0}/s   Run queue latency p95 {}",
-                        cpu_percentage, wakeups_per_sec, runq_p95,
+                        "Thread CPU {:.6}%   Total CPU {:.6}%   Wakeups {:.0}/s   Run queue latency p95 {}",
+                        cpu_percentage, cpu_percentage / cores as f64, wakeups_per_sec, runq_p95,
                     );
 
                     window_start = Instant::now();
