@@ -11,8 +11,8 @@ use aya_ebpf::{
     programs::TracePointContext,
 };
 use freya_top_common::{
-    EVENT_KIND_CPU_RUNTIME, EVENT_KIND_INVOLUNTARY_CONTEXT_SWITCH, EVENT_KIND_RUNQ_LATENCY,
-    EVENT_KIND_VOLUNTARY_CONTEXT_SWITCH, EVENT_KIND_WAKEUP, Event,
+    EVENT_KIND_CPU_RUNTIME, EVENT_KIND_INVOLUNTARY_CONTEXT_SWITCH, EVENT_KIND_OFF_CPU_RUNTIME,
+    EVENT_KIND_RUNQ_LATENCY, EVENT_KIND_VOLUNTARY_CONTEXT_SWITCH, EVENT_KIND_WAKEUP, Event,
 };
 
 const SCHED_SWITCH_PREV_PID_OFFSET: usize = 24;
@@ -43,6 +43,9 @@ static WAKEUPS: HashMap<u32, WakeupInfo> = HashMap::with_max_entries(8192, 0);
 
 #[map]
 static RUNNING: HashMap<u32, u64> = HashMap::with_max_entries(8192, 0);
+
+#[map]
+static OFF_CPU: HashMap<u32, u64> = HashMap::with_max_entries(8192, 0);
 
 #[map]
 static PENDING_RUNQ: HashMap<u32, RunqInfo> = HashMap::with_max_entries(8192, 0);
@@ -122,6 +125,8 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, i64> {
         } else {
             emit_event(EVENT_KIND_VOLUNTARY_CONTEXT_SWITCH, prev_tid, now, 1)?;
         }
+
+        let _ = OFF_CPU.insert(&prev_tid, now, 0);
     }
 
     let _ = RUNNING.remove(&prev_tid);
@@ -138,6 +143,17 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, i64> {
     let _ = WAKEUPS.remove(&next_tid);
 
     let _ = RUNNING.insert(&next_tid, &now, 0);
+
+    // TODO should be replaced by sched_process_exit
+    if let Some(switch_out_ns) = unsafe { OFF_CPU.get(&next_tid) } {
+        emit_event(
+            EVENT_KIND_OFF_CPU_RUNTIME,
+            next_tid,
+            now,
+            now - switch_out_ns,
+        )?;
+        let _ = OFF_CPU.remove(&next_tid);
+    }
 
     Ok(0)
 }
